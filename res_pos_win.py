@@ -6,7 +6,7 @@ Script calculates size of the target windows depending on current screen size.
 Required python 2.7
 
 Dependencies:
-    - xrandr
+    - pygtk
     - wmctrl
     - xdotool
     - xwininfo
@@ -47,17 +47,20 @@ possible moves of the depicted window would be:
         - move to screen 1 to the left half
         - move to screen 1 to the right half
 
+TODO: Make it more flexible with different window configurations
+
 Author: Roman 'gryf' Dobosz <gryf73@gmail.com>
 Date: 2013-01-06
-Version: 1.1
+Date: 2014-03-31 (used pygtk instead of xrandr, which is faster)
+Version: 1.2
 """
-import os
 import sys
 import re
 from subprocess import Popen, PIPE, call
-import json
 
-CACHE_FILENAME = "~/.cache/res_pos_win.cache"
+from gtk import gdk
+
+
 DOCK_ON_RIGHT = True
 COVER_MINIWINDOWS = False
 COVER_DOCK = False
@@ -72,24 +75,11 @@ class Screens(object):
         """Class container for a Screen objects and whole area coordinates"""
         self.screens = []
         self.coords = ()
+        self.dimension = None
 
     def append(self, screen):
         """Add screen"""
         self.screens.append(screen)
-
-    def dump(self):
-        """Dump object as dictionary - suitable for serialziation"""
-        return {"coords": self.coords,
-                "screens": [scr.dump() for scr in self.screens]}
-
-    def load(self, data):
-        """Recreate object state from provided dictionary"""
-        self.screens = []
-        self.coords = tuple(data["coords"])
-        for scr in data['screens']:
-            screen = Screen()
-            screen.load(scr)
-            self.screens.append(screen)
 
     def guess_dimensions(self, window):
         """
@@ -110,6 +100,7 @@ class Screens(object):
                     return "maximized"
 
         return None
+
 
 class Screen(object):
     """
@@ -150,7 +141,6 @@ class Screen(object):
             # it is rare, but hell, shit happens
             sx = sx - 1
 
-
         if self.main and not COVER_DOCK:
             # dock on the right side + 2px for border
             self.x = sx = sx - (64 + 2)
@@ -169,31 +159,6 @@ class Screen(object):
         self.maximized['size_y'] = self.right_half['size_y'] = \
                 self.left_half['size_y'] = sy - DECOTATORS_HEIGHT
 
-    def dump(self):
-        """
-        Return current Screen object state as dictionary suitable for
-        serialization
-        """
-        return {"main": self.main,
-                "x": self.x,
-                "y": self.y,
-                "x_shift": self.x_shift,
-                "y_shift": self.y_shift,
-                "left_half": self.left_half,
-                "right_half": self.right_half,
-                "maximized": self.maximized}
-
-    def load(self, data):
-        """Restore Screen state from provided dictionary"""
-        self.x = data['x']
-        self.y = data['y']
-        self.x_shift = data['x_shift']
-        self.y_shift = data['y_shift']
-        self.left_half = data['left_half']
-        self.right_half = data['right_half']
-        self.maximized = data['maximized']
-        self.main = data['main']
-
 
 class WMWindow(object):
     """
@@ -201,7 +166,7 @@ class WMWindow(object):
     surrounded environment (screens and such).
     """
 
-    screen_re = re.compile("[^,]*,\scurrent\s(\d+)\sx\s(\d+),.*")
+    screen_re = re.compile("[^,].*,\scurrent\s(\d+)\sx\s(\d+),.*")
     device_re = re.compile(".*\sconnected\s(\d+)x(\d+)\+(\d+)\+(\d+)")
     display_re = re.compile("^.*,\scurrent\s(\d+)\sx\s(\d+),\s.*$")
     position_re = re.compile("^\s+Position:\s(\d+),(\d+)\s.*$")
@@ -220,21 +185,8 @@ class WMWindow(object):
         self.current_screen = 0
         self.state = None
 
-        self._load_screens()
+        self._discover_screens()
         self._get_props()
-
-    def _load_screens(self):
-        """
-        Load screen form cache file or create them from scratch if cache
-        doesn't exists
-        """
-        fname = os.path.expanduser(CACHE_FILENAME)
-        if not os.path.exists(fname):
-            self._discover_screens()
-        else:
-            with open(fname) as fp_:
-                self.screens = Screens()
-                self.screens.load(json.load(fp_))
 
     def _get_props(self):
         """
@@ -281,45 +233,20 @@ class WMWindow(object):
     def _discover_screens(self):
         """Create list of available screens. Assuming, that first screen
         reported is main screen."""
-        out = Popen(['xrandr'], stdout=PIPE).communicate()[0]
+
         self.screens = Screens()
 
-        for line in out.split("\n"):
-            if self.device_re.match(line):
-                x, y, sx, sy = self.device_re.match(line).groups()
-                screen = Screen(x, y, sx, sy)
-                if not self.screens.screens:
-                    screen.main = True
-                screen.calculate_columns()
-                self.screens.append(screen)
-            match = self.display_re.match(line)
-            if match:
-                self.display_size = match.groups()
+        # get the screen dimension - it may be composed by several outputs
+        self.display_size = (gdk.screen_width(), gdk.screen_height())
 
-        fname = os.path.expanduser(CACHE_FILENAME)
-
-        # sort screens depending on the position (only horizontal order is
-        # supported)
-        screens = {}
-
-        for screen in self.screens.screens:
-            screens[screen.x_shift] = screen
-
-        self.screens.screens =  [screens[key] for key in
-                                 sorted(screens.keys())]
-
-
-        if not os.path.exists(fname):
-            try:
-                os.makedirs(os.path.dirname(fname))
-            except OSError:
-                pass
-
-            try:
-                with open(fname, "w") as fp:
-                    json.dump(self.screens.dump(), fp)
-            except (OSError, IOError) as msg:
-                print "Error in creating cache file:\n", msg
+        gdk_screen = gdk.screen_get_default()
+        for out_num in range(gdk_screen.get_n_monitors()):
+            sx, sy, x, y = gdk_screen.get_monitor_geometry(out_num)
+            screen = Screen(x, y, sx, sy)
+            if not self.screens.screens:
+                screen.main = True
+            screen.calculate_columns()
+            self.screens.append(screen)
 
     def get_data(self):
         """Return current window coordinates and size"""
@@ -350,30 +277,27 @@ class WMWindow(object):
         self.current_screen = idx
         return True
 
-    def full(self):
-        """Maximize window"""
+    # def left(self, screen_direction=None):
+        # """Maximize to left half"""
 
-    def left(self, screen_direction=None):
-        """Maximize to left half"""
+        # coords = self.screens.screens[self.current_screen].left_half
+        # cmd = ['xdotool', "getactivewindow",
+               # "windowmove", str(coords['pos_x']), str(coords['pos_y']),
+               # "windowsize", str(coords['size_x']), str(coords['size_y'])]
+        # call(cmd)
 
-        coords = self.screens.screens[self.current_screen].left_half
-        cmd = ['xdotool', "getactivewindow",
-               "windowmove", str(coords['pos_x']), str(coords['pos_y']),
-               "windowsize", str(coords['size_x']), str(coords['size_y'])]
-        call(cmd)
+    # def right(self, screen_direction=None):
+        # """Maximize to right half"""
+        # cmd = ['xdotool', "getactivewindow"]
+        # if screen_direction:
+            # if not self.move_to_screen(screen_direction):
+                # return
 
-    def right(self, screen_direction=None):
-        """Maximize to right half"""
-        cmd = ['xdotool', "getactivewindow"]
-        if screen_direction:
-            if not self.move_to_screen(screen_direction):
-                return
-
-        if screen_direction:
-            move = self.move_to_screen(screen_direction)
-            if not move:
-                return
-            cmd.extend(move)
+        # if screen_direction:
+            # move = self.move_to_screen(screen_direction)
+            # if not move:
+                # return
+            # cmd.extend(move)
 
     def get_coords(self, which):
         """Return screen coordinates"""
@@ -422,6 +346,7 @@ def usage():
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         usage()
+        sys.exit(1)
 
     if sys.argv[1] == "cycle_left":
         cycle("left")
@@ -429,4 +354,4 @@ if __name__ == "__main__":
         cycle("right")
     else:
         usage()
-
+        sys.exit(1)
