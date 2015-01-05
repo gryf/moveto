@@ -7,12 +7,13 @@ Required python 2.7
 
 Dependencies:
     - pygtk
+    - docopt
     - wmctrl
     - xdotool
     - xwininfo
 
-Calculate possible moves of the window contary to the current size and
-position. Assuming we have screen layout (two phisical monitors in twin view
+Calculate possible moves of the window against to the current size and
+position. Assuming we have screen layout (two physical monitors in twin view
 nvidia mode which makes one big screen available)
 
     +---------------------+-----------------------------+--+
@@ -47,24 +48,60 @@ possible moves of the depicted window would be:
         - move to screen 1 to the left half
         - move to screen 1 to the right half
 
-TODO: Make it more flexible with different window configurations
+TODO: Make it more flexible with different screen configurations
 
 Author: Roman 'gryf' Dobosz <gryf73@gmail.com>
 Date: 2013-01-06
 Date: 2014-03-31 (used pygtk instead of xrandr, which is faster)
-Version: 1.2
+Date: 2014-06-25 added docopt, corrections and simplify the process
+Version: 1.3
 """
 import sys
+import os
 import re
 from subprocess import Popen, PIPE, call
+from docopt import docopt
 
 from gtk import gdk
 
 
-DOCK_ON_RIGHT = True
-COVER_MINIWINDOWS = False
+# TODO: Make it configurable (lots of options starting from ini file)
+COVER_MINIWINDOWS = True
 COVER_DOCK = False
 DECOTATORS_HEIGHT = 29  # TODO: get it somehow from real window
+
+
+def get_monitors():
+    """Get monitors information:
+        name
+        index
+        dimensions (as a tuple position x, y and dimension x and y)"""
+
+    monitors = {}
+    gdk_screen = gdk.screen_get_default()
+
+    for out_num in range(gdk_screen.get_n_monitors()):
+        monitor = {"index": out_num}
+        (monitor["sx"], monitor["sy"],
+         monitor["x"], monitor["y"]) = gdk_screen.get_monitor_geometry(out_num)
+        monitors[gdk_screen.get_monitor_plug_name(out_num)] = monitor
+
+    return monitors
+
+
+def set_cover():
+    """read actual wmaker config and set apropriate globals"""
+    global COVER_MINIWINDOWS, COVER_DOCK
+
+    with open(os.path.expanduser("~/GNUstep/Defaults/WindowMaker")) as fobj:
+        for line in fobj:
+            if "NoWindowOverIcons" in line and "YES" in line:
+                COVER_MINIWINDOWS = False
+                continue
+
+            if "NoWindowOverDock" in line and "NO" in line:
+                COVER_DOCK = True
+                continue
 
 
 class Screens(object):
@@ -144,15 +181,19 @@ class Screen(object):
         if self.main and not COVER_DOCK:
             # dock on the right side + 2px for border
             self.x = sx = sx - (64 + 2)
+        else:
+            self.x = sx = sx - 2
 
         # miniwindows on bottom + 2px for border
+        print "calculate_columns", COVER_MINIWINDOWS
         if not COVER_MINIWINDOWS:
             self.y = sy = sy - (64 + 2)
 
         self.left_half['size_x'] = sx / 2 - 1
+        self.maximized['pos_x'] = self.left_half['pos_x'] = self.x_shift
 
         self.right_half['size_x'] = sx / 2
-        self.right_half['pos_x'] = sx / 2
+        self.right_half['pos_x'] = sx / 2 + self.x_shift
 
         self.maximized['size_x'] = sx
 
@@ -166,26 +207,23 @@ class WMWindow(object):
     surrounded environment (screens and such).
     """
 
-    screen_re = re.compile("[^,].*,\scurrent\s(\d+)\sx\s(\d+),.*")
-    device_re = re.compile(".*\sconnected\s(\d+)x(\d+)\+(\d+)\+(\d+)")
-    display_re = re.compile("^.*,\scurrent\s(\d+)\sx\s(\d+),\s.*$")
     position_re = re.compile("^\s+Position:\s(\d+),(\d+)\s.*$")
     geometry_re = re.compile(".*Geometry:\s(\d+)x(\d+).*")
 
-    def __init__(self):
+    def __init__(self, monitors, main):
         """
         Initialization
         """
         self.screens = []
-        self.display_size = None
         self.x = None
         self.y = None
         self.pos_x = None
         self.pos_y = None
         self.current_screen = 0
         self.state = None
+        self._main = main
 
-        self._discover_screens()
+        self._discover_screens(monitors)
         self._get_props()
 
     def _get_props(self):
@@ -193,7 +231,6 @@ class WMWindow(object):
         Update current window dimensions and position
         """
         self.x = self.y = self.pos_x = self.pos_y = None
-
 
         out = Popen(['xdotool', 'getactivewindow', 'getwindowgeometry'],
                     stdout=PIPE).communicate()[0]
@@ -214,6 +251,11 @@ class WMWindow(object):
             self.pos_x = int(self.pos_x) - 1
             self.pos_y = int(self.pos_y) - 43
 
+            for scr_no, scr in enumerate(self.screens.screens):
+                if self.pos_x in range(scr.x_shift, scr.x + scr.x_shift):
+                    self.current_screen = scr_no
+                    break
+
         match = self.geometry_re.match(size)
         if match:
             self.x, self.y = match.groups()
@@ -230,23 +272,31 @@ class WMWindow(object):
         """Wrapper for screens guess_dimensions method"""
         return self.screens.guess_dimensions(self.get_data())
 
-    def _discover_screens(self):
+    def _discover_screens(self, monitors):
         """Create list of available screens. Assuming, that first screen
         reported is main screen."""
 
         self.screens = Screens()
 
-        # get the screen dimension - it may be composed by several outputs
-        self.display_size = (gdk.screen_width(), gdk.screen_height())
-
-        gdk_screen = gdk.screen_get_default()
-        for out_num in range(gdk_screen.get_n_monitors()):
-            sx, sy, x, y = gdk_screen.get_monitor_geometry(out_num)
-            screen = Screen(x, y, sx, sy)
-            if not self.screens.screens:
+        for name, data in monitors.items():
+            screen = Screen(data["x"], data["y"], data["sx"], data["sy"])
+            if self._main and len(monitors.keys()) > 1:
+                if self._main == name:
+                    screen.main = True
+            elif not self.screens.screens:
                 screen.main = True
+
             screen.calculate_columns()
             self.screens.append(screen)
+
+        # sort screens depending on the position (only horizontal order is
+        # supported)
+        screens = {}
+
+        for screen in self.screens.screens:
+            screens[screen.x_shift] = screen
+
+        self.screens.screens = [screens[key] for key in sorted(screens.keys())]
 
     def get_data(self):
         """Return current window coordinates and size"""
@@ -277,28 +327,6 @@ class WMWindow(object):
         self.current_screen = idx
         return True
 
-    # def left(self, screen_direction=None):
-        # """Maximize to left half"""
-
-        # coords = self.screens.screens[self.current_screen].left_half
-        # cmd = ['xdotool', "getactivewindow",
-               # "windowmove", str(coords['pos_x']), str(coords['pos_y']),
-               # "windowsize", str(coords['size_x']), str(coords['size_y'])]
-        # call(cmd)
-
-    # def right(self, screen_direction=None):
-        # """Maximize to right half"""
-        # cmd = ['xdotool', "getactivewindow"]
-        # if screen_direction:
-            # if not self.move_to_screen(screen_direction):
-                # return
-
-        # if screen_direction:
-            # move = self.move_to_screen(screen_direction)
-            # if not move:
-                # return
-            # cmd.extend(move)
-
     def get_coords(self, which):
         """Return screen coordinates"""
         scr = self.screens.screens[self.current_screen]
@@ -310,48 +338,107 @@ class WMWindow(object):
         return coord_map[which]
 
 
-def cycle(direction):
+def cycle(monitors, right=False, main=None):
     """Cycle through the window states"""
-    wmwin = WMWindow()
+    wmwin = WMWindow(monitors, main)
     current_state = wmwin.guess_dimensions()
 
-    if direction == "left":
-        movement = {"left": ("right_half", "left"),
-                    "maximized": ("left_half", None),
-                    "right": ("maximized", None),
-                    None: ("left_half", None)}
-    elif direction == "right":
-        movement = {"left": ("maximized", None),
-                    "maximized": ("right_half", None),
-                    "right": ("left_half", "right"),
-                    None: ("right_half", None)}
+    direction = "right" if right else "left"
 
-    key, direction = movement[current_state]
+    if direction == "left":
+        movement = {"left": ("right_half", "left", False),
+                    "maximized": ("left_half", None, False),
+                    "right": ("maximized", None, True),
+                    None: ("left_half", None, False)}
+    elif direction == "right":
+        movement = {"left": ("maximized", None, False),
+                    "maximized": ("right_half", None, True),
+                    "right": ("left_half", "right", False),
+                    None: ("right_half", None, False)}
+
+    key, direction, order = movement[current_state]
 
     if direction:
         if not wmwin.move_to_screen(direction):
             return
 
     coords = wmwin.get_coords(key)
-    cmd = ['xdotool', "getactivewindow",
+    if order:
+        cmd = ['xdotool', "getactivewindow",
+               "windowsize", str(coords['size_x']), str(coords['size_y']),
+               "windowmove", str(coords['pos_x']), str(coords['pos_y']),
+               "mousemove", str(coords['pos_x'] + coords['size_x'] / 2),
+               str(coords['pos_y'] + coords['size_y'] / 2)]
+    else:
+        cmd = ['xdotool', "getactivewindow",
            "windowmove", str(coords['pos_x']), str(coords['pos_y']),
-           "windowsize", str(coords['size_x']), str(coords['size_y'])]
+           "windowsize", str(coords['size_x']), str(coords['size_y']),
+           "mousemove", str(coords['pos_x'] + coords['size_x'] / 2),
+           str(coords['pos_y'] + coords['size_y'] / 2)]
 
     call(cmd)
 
 
-def usage():
-    print "usage: %s [cycle_left|cycle_right]" % sys.argv[0]
+def show_monitors(monitors):
+    """Print out available monitors"""
+    print "Available monitors:"
+    for name, data in monitors.items():
+        mon = data.copy()
+        mon.update({"name": name})
+        print "%(name)s at %(sx)sx%(sy)s with dimensions %(x)sx%(y)s" % mon
+
+
+def move_mouse(monitors, name):
+    """Move the mosue pointer to the left upper corner oft the specified by
+    the name screen"""
+    mon = monitors.get(name)
+
+    if not mon:
+        print "No such monitor: %s" % name
+        return
+
+    posx = mon["sx"] + 15
+    posy = mon["sy"] + 50
+    cmd = ['xdotool', "mousemove", str(posx), str(posy)]
+    call(cmd)
+
+
+def main():
+    """get the arguments, run the app"""
+    arguments = """Move windows around mimicking Windows7 flag+arrows behaviour
+
+Usage:
+  %(prog)s move (left|right) [-r|-l] [-m NAME]
+  %(prog)s mousemove -m NAME
+  %(prog)s showmonitors
+  %(prog)s (-h | --help)
+  %(prog)s --version
+
+Options:
+  -m NAME --monitor-name=NAME  Name of the monitor to be treade as the main one
+                               (so the one containing dock)
+  -r --dock-right              Dock is on the right edge of the rightmost
+                               screen
+  -l --dock-left               Dock is on the left edge of the leftmost screen
+  -h --help                    Show this screen.
+  -v --version                 Show version.
+
+""" % {"prog": sys.argv[0]}
+    opts = docopt(arguments, version=0.1)
+    monitors = get_monitors()
+
+    if opts["showmonitors"]:
+        show_monitors(monitors)
+        return
+
+    if opts["mousemove"]:
+        move_mouse(monitors, opts['--monitor-name'])
+        return
+
+    if opts["move"]:
+        set_cover()
+        cycle(monitors, bool(opts["right"]), main=opts["--monitor-name"])
+
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        usage()
-        sys.exit(1)
-
-    if sys.argv[1] == "cycle_left":
-        cycle("left")
-    elif sys.argv[1] == "cycle_right":
-        cycle("right")
-    else:
-        usage()
-        sys.exit(1)
+    main()
