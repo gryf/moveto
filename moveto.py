@@ -16,6 +16,9 @@ Calculate possible moves of the window against to the current size and
 position. Assuming we have screen layout (two physical monitors in twin view
 nvidia mode which makes one big screen available)
 
+To illustrate the behaviour, lets analyze following layout. Note, the window
+is not maximized:
+
     +---------------------+-----------------------------+--+
     |                     |                             |  |
     | +--------+          |                             +--+
@@ -24,33 +27,95 @@ nvidia mode which makes one big screen available)
     | +--------+          |                             |  |
     |                     |                             +--+
     |                     |                             |  |
-    |   screen 0          |   screen 1                  +--+
+    |                     |                             +--+
     |                     |                                |
     +--+                  +--+--+                          |
-    |  |                  |  |  |                          |
+    |  |         screen 0 |  |  |                 screen 1 |
     +--+------------------+--+--+--------------------------+
 
-possible moves of the depicted window would be:
-    1. without resizing:
-        - move to the left edge of the screen 0
-        - move to the right edge of the screen 0
-        - move to the left edge of the screen 1
-        - move to the right edge of the screen 1
-        - move to the screen 1 (don't cross boundary of the
-          screen)
-        - move to the left edge of the screen 1
-        - move to the right edge of the screen 1
-    2. with resizing:
-        - move to the screen 1 (maximized)
-        - maximize on current screen
-        - move to screen 0 to the left half
-        - move to screen 0 to the right half
-        - move to screen 1 to the left half
-        - move to screen 1 to the right half
+Possible moves of the depicted window would be:
+    - 'move left' will move window to to the left half on screen 0
+    - 'move right' will move window to to the right half on screen 0
+
+Let's assume that we chose the latter, so the new layout would be as follow:
+
+    +----------+----------+-----------------------------+--+
+    |          | window   |                             |  |
+    |          |          |                             +--+
+    |          |          |                             |  |
+    |          |          |                             +--+
+    |          |          |                             |  |
+    |          |          |                             +--+
+    |          |          |                             |  |
+    |          |          |                             +--+
+    |          |          |                                |
+    +--+       +----------+--+--+                          |
+    |  |         screen 0 |  |  |                 screen 1 |
+    +--+------------------+--+--+--------------------------+
+
+The possibilities are:
+    - 'move left' will maximize window on screen 0
+    - 'move right' will move window to to the left half on screen 1
+
+Move right will end up with following layout. Note, that mouse cursor follow
+the window, so possible child windows of the current window should appear on
+the screen, where main window is.
+
+    +---------------------+--------------+--------------+--+
+    |                     | window       |              |  |
+    |                     |              |              +--+
+    |                     |              |              |  |
+    |                     |              |              +--+
+    |                     |              |              |  |
+    |                     |              |              +--+
+    |                     |              |              |  |
+    |                     |              |              +--+
+    |                     |              |                 |
+    +--+                  +--+--+--------+                 |
+    |  |         screen 0 |  |  |                 screen 1 |
+    +--+------------------+--+--+--------------------------+
+
+Again, the possibilities are:
+    - 'move left' will move window to to the right half on screen 0
+    - 'move right' will maximize window on screen 1
+
+
+And, if user keeps pushing window to the right it will need just two more
+steps to end up like this:
+
+    +---------------------+-----------------------------+--+
+    |                     | window                      |  |
+    |                     |                             +--+
+    |                     |                             |  |
+    |                     |                             +--+
+    |                     |                             |  |
+    |                     |                             +--+
+    |                     |                             |  |
+    |                     |                             +--+
+    |                     |                             |  |
+    +--+                  +--+--+-----------------------+  |
+    |  |         screen 0 |  |  |                 screen 1 |
+    +--+------------------+--+--+--------------------------+
+
+    +---------------------+--------------+--------------+--+
+    |                     |              | window       |  |
+    |                     |              |              +--+
+    |                     |              |              |  |
+    |                     |              |              +--+
+    |                     |              |              |  |
+    |                     |              |              +--+
+    |                     |              |              |  |
+    |                     |              |              +--+
+    |                     |              |              |  |
+    +--+                  +--+--+        +--------------+  |
+    |  |         screen 0 |  |  |                 screen 1 |
+    +--+------------------+--+--+--------------------------+
+
+Further moving window to the right will have no effect.
 
 TODO: Make it more flexible with different screen configurations
 
-Author: Roman 'gryf' Dobosz <gryf73@gmail.com>
+Author: Roman "gryf" Dobosz <gryf73@gmail.com>
 Date: 2013-01-06
 Date: 2014-03-31 (used pygtk instead of xrandr, which is faster)
 Date: 2014-06-25 added docopt, corrections and simplify the process
@@ -131,9 +196,9 @@ class Screens(object):
                 return "right"
 
             # check for maximized window (approximated)
-            if window['pos_x'] == window['pos_y'] == 0:
-                if window['size_x'] in range(scr.x - 32, scr.x + 32) and \
-                        window['size_x'] in range(scr.x - 32, scr.x + 32):
+            if window["pos_x"] == window["pos_y"] == 0:
+                if window["size_x"] in range(scr.x - 32, scr.x + 32) and \
+                        window["size_x"] in range(scr.x - 32, scr.x + 32):
                     return "maximized"
 
         return None
@@ -189,16 +254,16 @@ class Screen(object):
         if not COVER_MINIWINDOWS:
             self.y = sy = sy - (64 + 2)
 
-        self.left_half['size_x'] = sx / 2 - 1
-        self.maximized['pos_x'] = self.left_half['pos_x'] = self.x_shift
+        self.left_half["size_x"] = sx / 2 - 1
+        self.maximized["pos_x"] = self.left_half["pos_x"] = self.x_shift
 
-        self.right_half['size_x'] = sx / 2
-        self.right_half['pos_x'] = sx / 2 + self.x_shift
+        self.right_half["size_x"] = sx / 2
+        self.right_half["pos_x"] = sx / 2 + self.x_shift
 
-        self.maximized['size_x'] = sx
+        self.maximized["size_x"] = sx
 
-        self.maximized['size_y'] = self.right_half['size_y'] = \
-                self.left_half['size_y'] = sy - DECOTATORS_HEIGHT
+        self.maximized["size_y"] = self.right_half["size_y"] = \
+                self.left_half["size_y"] = sy - DECOTATORS_HEIGHT
 
 
 class WMWindow(object):
@@ -232,7 +297,7 @@ class WMWindow(object):
         """
         self.x = self.y = self.pos_x = self.pos_y = None
 
-        out = Popen(['xdotool', 'getactivewindow', 'getwindowgeometry'],
+        out = Popen(["xdotool", "getactivewindow", "getwindowgeometry"],
                     stdout=PIPE).communicate()[0]
         out = out.strip().split("\n")
 
@@ -364,17 +429,17 @@ def cycle(monitors, right=False, main=None):
 
     coords = wmwin.get_coords(key)
     if order:
-        cmd = ['xdotool', "getactivewindow",
-               "windowsize", str(coords['size_x']), str(coords['size_y']),
-               "windowmove", str(coords['pos_x']), str(coords['pos_y']),
-               "mousemove", str(coords['pos_x'] + coords['size_x'] / 2),
-               str(coords['pos_y'] + coords['size_y'] / 2)]
+        cmd = ["xdotool", "getactivewindow",
+               "windowsize", str(coords["size_x"]), str(coords["size_y"]),
+               "windowmove", str(coords["pos_x"]), str(coords["pos_y"]),
+               "mousemove", str(coords["pos_x"] + coords["size_x"] / 2),
+               str(coords["pos_y"] + coords["size_y"] / 2)]
     else:
-        cmd = ['xdotool', "getactivewindow",
-           "windowmove", str(coords['pos_x']), str(coords['pos_y']),
-           "windowsize", str(coords['size_x']), str(coords['size_y']),
-           "mousemove", str(coords['pos_x'] + coords['size_x'] / 2),
-           str(coords['pos_y'] + coords['size_y'] / 2)]
+        cmd = ["xdotool", "getactivewindow",
+           "windowmove", str(coords["pos_x"]), str(coords["pos_y"]),
+           "windowsize", str(coords["size_x"]), str(coords["size_y"]),
+           "mousemove", str(coords["pos_x"] + coords["size_x"] / 2),
+           str(coords["pos_y"] + coords["size_y"] / 2)]
 
     call(cmd)
 
@@ -399,7 +464,7 @@ def move_mouse(monitors, name):
 
     posx = mon["sx"] + 15
     posy = mon["sy"] + 50
-    cmd = ['xdotool', "mousemove", str(posx), str(posy)]
+    cmd = ["xdotool", "mousemove", str(posx), str(posy)]
     call(cmd)
 
 
@@ -415,8 +480,8 @@ Usage:
   %(prog)s --version
 
 Options:
-  -m NAME --monitor-name=NAME  Name of the monitor to be treade as the main one
-                               (so the one containing dock)
+  -m NAME --monitor-name=NAME  Name of the monitor to be treades as the main
+                               one (so the one containing dock)
   -r --dock-right              Dock is on the right edge of the rightmost
                                screen
   -l --dock-left               Dock is on the left edge of the leftmost screen
@@ -432,7 +497,7 @@ Options:
         return
 
     if opts["mousemove"]:
-        move_mouse(monitors, opts['--monitor-name'])
+        move_mouse(monitors, opts["--monitor-name"])
         return
 
     if opts["move"]:
