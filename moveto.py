@@ -125,8 +125,9 @@ import sys
 import os
 import re
 from subprocess import Popen, PIPE, call
-from docopt import docopt
+import logging
 
+from docopt import docopt
 from gtk import gdk
 
 
@@ -134,6 +135,20 @@ from gtk import gdk
 COVER_MINIWINDOWS = True
 COVER_DOCK = False
 DECOTATORS_HEIGHT = 29  # TODO: get it somehow from real window
+
+logging.basicConfig(filename=os.path.expanduser('~/moveto.log'),
+                    format='%(funcName)s:%(lineno)d %(message)s',
+                    level=logging.INFO)
+
+
+def get_window_name():
+    """Return the current active window name"""
+
+    name = Popen(["xdotool", "getactivewindow", "getwindowname"],
+                      stdout=PIPE).communicate()[0]
+    name = name.strip()
+    logging.debug('window name: %s', name)
+    return name
 
 
 def get_monitors():
@@ -209,6 +224,8 @@ class Screen(object):
     Holds separate display information. It can be separate X screen or just a
     display/monitor
     """
+    misbehaving_windows = ["Oracle VM VirtualBox", "LibreOffice"]
+
     def __init__(self, x=0, y=0, sx=0, sy=0):
         """Initialization"""
         self.x = int(x)
@@ -232,12 +249,13 @@ class Screen(object):
                           "size_x": 0,
                           "size_y": 0}
 
-    def calculate_columns(self):
+    def calculate_columns(self, window_name):
         """
         Calculate dimension grid, which two column windows could occupy,
         make it pixel exact.
         """
         sx, sy = self.x, self.y
+        logging.debug('sx, and sy: %d, %d', sx, sy)
 
         if sx % 2 != 0:
             # it is rare, but hell, shit happens
@@ -250,7 +268,7 @@ class Screen(object):
             self.x = sx = sx - 2
 
         # miniwindows on bottom + 2px for border
-        print "calculate_columns", COVER_MINIWINDOWS
+        logging.debug("Covering miniwindows: %s", COVER_MINIWINDOWS)
         if not COVER_MINIWINDOWS:
             self.y = sy = sy - (64 + 2)
 
@@ -265,6 +283,17 @@ class Screen(object):
         self.maximized["size_y"] = self.right_half["size_y"] = \
                 self.left_half["size_y"] = sy - DECOTATORS_HEIGHT
 
+        for name in self.misbehaving_windows:
+            if name in window_name:
+                logging.debug('Correcting position of window %s off 21 '
+                              'pixels', window_name)
+                self.left_half["pos_y"] = 21
+                self.right_half["pos_y"] = 21
+                self.right_half["pos_y"] = 21
+
+        logging.debug('left half: %s', self.left_half)
+        logging.debug('right half: %s', self.right_half)
+        logging.debug('maximized: %s', self.maximized)
 
 class WMWindow(object):
     """
@@ -287,6 +316,7 @@ class WMWindow(object):
         self.current_screen = 0
         self.state = None
         self._main = main
+        self.name = get_window_name()
 
         self._discover_screens(monitors)
         self._get_props()
@@ -302,7 +332,8 @@ class WMWindow(object):
         out = out.strip().split("\n")
 
         if len(out) != 3:
-            print "Cannot get window size and position"
+            logging.warning('Cannot get window size and position for %s',
+                            self.name)
             return
 
         pos, size = out[1:]
@@ -313,8 +344,12 @@ class WMWindow(object):
             # XXX: arbitrary correction of the window position. Don't know why
             # xdotool reports such strange data - maybe it is connected with
             # inner/outer dimensions and/or window manager decorations
+            logging.debug('window position reported via xdotool: %s x %s',
+                          self.pos_x, self.pos_y)
             self.pos_x = int(self.pos_x) - 1
             self.pos_y = int(self.pos_y) - 43
+            logging.debug('window position after corrections: %s x %s',
+                          self.pos_x, self.pos_y)
 
             for scr_no, scr in enumerate(self.screens.screens):
                 if self.pos_x in range(scr.x_shift, scr.x + scr.x_shift):
@@ -328,8 +363,10 @@ class WMWindow(object):
             self.y = int(self.y)
 
         if None in (self.x, self.y, self.pos_x, self.pos_y):
-            print "Not enough data for calculate window placement"
-            print self.x, self.y, self.pos_x, self.pos_y
+            logging.warning('Not enough data for calculate window placement. '
+                            'Window name "%s", (x, y, pos_x, pos_y): '
+                            '%d, %d, %d, %d', self.name, self.x, self.y,
+                            self.pos_x, self.pos_y)
         else:
             self.guess_dimensions()
 
@@ -351,7 +388,7 @@ class WMWindow(object):
             elif not self.screens.screens:
                 screen.main = True
 
-            screen.calculate_columns()
+            screen.calculate_columns(self.name)
             self.screens.append(screen)
 
         # sort screens depending on the position (only horizontal order is
@@ -393,7 +430,7 @@ class WMWindow(object):
         return True
 
     def get_coords(self, which):
-        """Return screen coordinates"""
+        """Return window in screen coordinates"""
         scr = self.screens.screens[self.current_screen]
 
         coord_map = {"maximized": scr.maximized,
