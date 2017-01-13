@@ -16,9 +16,6 @@ Calculate possible moves of the window against to the current size and
 position. Assuming we have screen layout (two physical monitors in twin view
 nvidia mode which makes one big screen available)
 
-To illustrate the behaviour, lets analyze following layout. Note, the window
-is not maximized:
-
     +---------------------+-----------------------------+--+
     |                     |                             |  |
     | +--------+          |                             +--+
@@ -27,128 +24,72 @@ is not maximized:
     | +--------+          |                             |  |
     |                     |                             +--+
     |                     |                             |  |
-    |                     |                             +--+
+    |   screen 0          |   screen 1                  +--+
     |                     |                                |
     +--+                  +--+--+                          |
-    |  |         screen 0 |  |  |                 screen 1 |
+    |  |                  |  |  |                          |
     +--+------------------+--+--+--------------------------+
 
-Possible moves of the depicted window would be:
-    - 'move left' will move window to to the left half on screen 0
-    - 'move right' will move window to to the right half on screen 0
-
-Let's assume that we chose the latter, so the new layout would be as follow:
-
-    +----------+----------+-----------------------------+--+
-    |          | window   |                             |  |
-    |          |          |                             +--+
-    |          |          |                             |  |
-    |          |          |                             +--+
-    |          |          |                             |  |
-    |          |          |                             +--+
-    |          |          |                             |  |
-    |          |          |                             +--+
-    |          |          |                                |
-    +--+       +----------+--+--+                          |
-    |  |         screen 0 |  |  |                 screen 1 |
-    +--+------------------+--+--+--------------------------+
-
-The possibilities are:
-    - 'move left' will maximize window on screen 0
-    - 'move right' will move window to to the left half on screen 1
-
-Move right will end up with following layout. Note, that mouse cursor follow
-the window, so possible child windows of the current window should appear on
-the screen, where main window is.
-
-    +---------------------+--------------+--------------+--+
-    |                     | window       |              |  |
-    |                     |              |              +--+
-    |                     |              |              |  |
-    |                     |              |              +--+
-    |                     |              |              |  |
-    |                     |              |              +--+
-    |                     |              |              |  |
-    |                     |              |              +--+
-    |                     |              |                 |
-    +--+                  +--+--+--------+                 |
-    |  |         screen 0 |  |  |                 screen 1 |
-    +--+------------------+--+--+--------------------------+
-
-Again, the possibilities are:
-    - 'move left' will move window to to the right half on screen 0
-    - 'move right' will maximize window on screen 1
-
-
-And, if user keeps pushing window to the right it will need just two more
-steps to end up like this:
-
-    +---------------------+-----------------------------+--+
-    |                     | window                      |  |
-    |                     |                             +--+
-    |                     |                             |  |
-    |                     |                             +--+
-    |                     |                             |  |
-    |                     |                             +--+
-    |                     |                             |  |
-    |                     |                             +--+
-    |                     |                             |  |
-    +--+                  +--+--+-----------------------+  |
-    |  |         screen 0 |  |  |                 screen 1 |
-    +--+------------------+--+--+--------------------------+
-
-    +---------------------+--------------+--------------+--+
-    |                     |              | window       |  |
-    |                     |              |              +--+
-    |                     |              |              |  |
-    |                     |              |              +--+
-    |                     |              |              |  |
-    |                     |              |              +--+
-    |                     |              |              |  |
-    |                     |              |              +--+
-    |                     |              |              |  |
-    +--+                  +--+--+        +--------------+  |
-    |  |         screen 0 |  |  |                 screen 1 |
-    +--+------------------+--+--+--------------------------+
-
-Further moving window to the right will have no effect.
+possible moves of the depicted window would be:
+    1. without resizing:
+        - move to the left edge of the screen 0
+        - move to the right edge of the screen 0
+        - move to the left edge of the screen 1
+        - move to the right edge of the screen 1
+        - move to the screen 1 (don't cross boundary of the
+          screen)
+        - move to the left edge of the screen 1
+        - move to the right edge of the screen 1
+    2. with resizing:
+        - move to the screen 1 (maximized)
+        - maximize on current screen
+        - move to screen 0 to the left half
+        - move to screen 0 to the right half
+        - move to screen 1 to the left half
+        - move to screen 1 to the right half
 
 TODO: Make it more flexible with different screen configurations
 
-Author: Roman "gryf" Dobosz <gryf73@gmail.com>
+Author: Roman 'gryf' Dobosz <gryf73@gmail.com>
 Date: 2013-01-06
 Date: 2014-03-31 (used pygtk instead of xrandr, which is faster)
 Date: 2014-06-25 added docopt, corrections and simplify the process
-Version: 1.3
+Date: 2015-10-12 added debug option, figured out wmaker decorations
+                 calculation method
+Version: 1.4
 """
-import sys
-import os
-import re
+from docopt import docopt
 from subprocess import Popen, PIPE, call
 import logging
+import os
+import re
+import sys
 
-from docopt import docopt
 from gtk import gdk
 
 
 # TODO: Make it configurable (lots of options starting from ini file)
 COVER_MINIWINDOWS = True
 COVER_DOCK = False
-DECOTATORS_HEIGHT = 29  # TODO: get it somehow from real window
 
-logging.basicConfig(filename=os.path.expanduser('~/moveto.log'),
-                    format='%(funcName)s:%(lineno)d %(message)s',
-                    level=logging.INFO)
+def get_magic_number():
+    """Get the numbers for window shift and position"""
 
+    out = Popen(['xdotool', 'getactivewindow'],
+                stdout=PIPE).communicate()[0]
+    out = out.strip()
+    out = Popen(['xwininfo', '-id', out],
+                stdout=PIPE).communicate()[0]
+    out.strip()
+    for line in out.split("\n"):
+        line = line.strip()
+        if line.startswith("Relative upper-left Y"):
+            magic = int(line.split(" ")[-1].strip())
+            break
 
-def get_window_name():
-    """Return the current active window name"""
+    return magic * 2 + 1, magic + 8
 
-    name = Popen(["xdotool", "getactivewindow", "getwindowname"],
-                      stdout=PIPE).communicate()[0]
-    name = name.strip()
-    logging.debug('window name: %s', name)
-    return name
+MAGIC_NO, DECORATIONS_HEIGHT = get_magic_number()
 
 
 def get_monitors():
@@ -170,7 +111,7 @@ def get_monitors():
 
 
 def set_cover():
-    """read actual wmaker config and set apropriate globals"""
+    """read actual wmaker config and set appropriate globals"""
     global COVER_MINIWINDOWS, COVER_DOCK
 
     with open(os.path.expanduser("~/GNUstep/Defaults/WindowMaker")) as fobj:
@@ -200,10 +141,12 @@ class Screens(object):
 
     def guess_dimensions(self, window):
         """
-        Check wheter current window is in one of three states: maximized,
+        Check whether current window is in one of three states: maximized,
         left-half maximized, right-half maximized. If so, return appropriate
         information, None otherwise
         """
+        logging.debug("window - %s", str(window))
+
         for scr in self.screens:
             if window == scr.left_half:
                 return "left"
@@ -211,9 +154,9 @@ class Screens(object):
                 return "right"
 
             # check for maximized window (approximated)
-            if window["pos_x"] == window["pos_y"] == 0:
-                if window["size_x"] in range(scr.x - 32, scr.x + 32) and \
-                        window["size_x"] in range(scr.x - 32, scr.x + 32):
+            if window['pos_x'] == window['pos_y'] == 0:
+                if window['size_x'] in range(scr.x - 32, scr.x + 32) and \
+                        window['size_x'] in range(scr.x - 32, scr.x + 32):
                     return "maximized"
 
         return None
@@ -224,8 +167,6 @@ class Screen(object):
     Holds separate display information. It can be separate X screen or just a
     display/monitor
     """
-    misbehaving_windows = ["Oracle VM VirtualBox", "LibreOffice"]
-
     def __init__(self, x=0, y=0, sx=0, sy=0):
         """Initialization"""
         self.x = int(x)
@@ -249,13 +190,12 @@ class Screen(object):
                           "size_x": 0,
                           "size_y": 0}
 
-    def calculate_columns(self, window_name):
+    def calculate_columns(self):
         """
         Calculate dimension grid, which two column windows could occupy,
         make it pixel exact.
         """
         sx, sy = self.x, self.y
-        logging.debug('sx, and sy: %d, %d', sx, sy)
 
         if sx % 2 != 0:
             # it is rare, but hell, shit happens
@@ -268,32 +208,21 @@ class Screen(object):
             self.x = sx = sx - 2
 
         # miniwindows on bottom + 2px for border
-        logging.debug("Covering miniwindows: %s", COVER_MINIWINDOWS)
+        logging.debug("calculate_columns %s", COVER_MINIWINDOWS)
         if not COVER_MINIWINDOWS:
             self.y = sy = sy - (64 + 2)
 
-        self.left_half["size_x"] = sx / 2 - 1
-        self.maximized["pos_x"] = self.left_half["pos_x"] = self.x_shift
+        self.left_half['size_x'] = sx / 2 - 1
+        self.maximized['pos_x'] = self.left_half['pos_x'] = self.x_shift
 
-        self.right_half["size_x"] = sx / 2
-        self.right_half["pos_x"] = sx / 2 + self.x_shift
+        self.right_half['size_x'] = sx / 2
+        self.right_half['pos_x'] = sx / 2 + self.x_shift
 
-        self.maximized["size_x"] = sx
+        self.maximized['size_x'] = sx
 
-        self.maximized["size_y"] = self.right_half["size_y"] = \
-                self.left_half["size_y"] = sy - DECOTATORS_HEIGHT
+        self.maximized['size_y'] = self.right_half['size_y'] = \
+                self.left_half['size_y'] = sy - DECORATIONS_HEIGHT
 
-        for name in self.misbehaving_windows:
-            if name in window_name:
-                logging.debug('Correcting position of window %s off 21 '
-                              'pixels', window_name)
-                self.left_half["pos_y"] = 21
-                self.right_half["pos_y"] = 21
-                self.right_half["pos_y"] = 21
-
-        logging.debug('left half: %s', self.left_half)
-        logging.debug('right half: %s', self.right_half)
-        logging.debug('maximized: %s', self.maximized)
 
 class WMWindow(object):
     """
@@ -316,10 +245,51 @@ class WMWindow(object):
         self.current_screen = 0
         self.state = None
         self._main = main
-        self.name = get_window_name()
 
         self._discover_screens(monitors)
         self._get_props()
+
+    def _detect_dock_position(self):
+        """Find out all 64x64 windows, which are in most cases not manageable
+        by windowmaker, and try to figure out where they are placed -
+        currently it's a majority for certain x coordinate, since dock is
+        arranged vertically. Note, that clip may or may not influence the
+        process, since it might be placed freely, and contains more dockapps
+        or appicons than dock itself."""
+        res = Popen("xwininfo -tree -root -children".split(),
+                    stdout=PIPE).communicate()[0]
+        result = {}
+        for item in res.split("\n"):
+            if "64x64" not in item:
+                continue
+
+            item = item.split()
+            geometry = item[-2]
+            _, shift_x, shift_y = geometry.split("+")
+            try:
+                result[shift_x].append(shift_y)
+            except KeyError:
+                result[shift_x] = [shift_y]
+
+        length = 0
+        winner = 0
+        for key in result:
+            new_len = len(set(result[key]))
+            if new_len > length:
+                length = new_len
+                winner = key
+
+        winner = int(winner)
+        logging.debug("predicted x position of the dock: %d", winner)
+
+        import ipdb; ipdb.set_trace()
+        for screen in self.screens.screens:
+            logging.debug("screen: %s", str(screen))
+            if winner in range(screen.x_shift, screen.x + screen.x_shift + 1):
+                logging.debug("setting %s screen as a main", str(screen))
+                screen.main = True
+            else:
+                screen.main = False
 
     def _get_props(self):
         """
@@ -327,13 +297,12 @@ class WMWindow(object):
         """
         self.x = self.y = self.pos_x = self.pos_y = None
 
-        out = Popen(["xdotool", "getactivewindow", "getwindowgeometry"],
+        out = Popen(['xdotool', 'getactivewindow', 'getwindowgeometry'],
                     stdout=PIPE).communicate()[0]
         out = out.strip().split("\n")
 
         if len(out) != 3:
-            logging.warning('Cannot get window size and position for %s',
-                            self.name)
+            print "Cannot get window size and position"
             return
 
         pos, size = out[1:]
@@ -344,12 +313,8 @@ class WMWindow(object):
             # XXX: arbitrary correction of the window position. Don't know why
             # xdotool reports such strange data - maybe it is connected with
             # inner/outer dimensions and/or window manager decorations
-            logging.debug('window position reported via xdotool: %s x %s',
-                          self.pos_x, self.pos_y)
             self.pos_x = int(self.pos_x) - 1
-            self.pos_y = int(self.pos_y) - 43
-            logging.debug('window position after corrections: %s x %s',
-                          self.pos_x, self.pos_y)
+            self.pos_y = int(self.pos_y) - MAGIC_NO
 
             for scr_no, scr in enumerate(self.screens.screens):
                 if self.pos_x in range(scr.x_shift, scr.x + scr.x_shift):
@@ -363,10 +328,8 @@ class WMWindow(object):
             self.y = int(self.y)
 
         if None in (self.x, self.y, self.pos_x, self.pos_y):
-            logging.warning('Not enough data for calculate window placement. '
-                            'Window name "%s", (x, y, pos_x, pos_y): '
-                            '%d, %d, %d, %d', self.name, self.x, self.y,
-                            self.pos_x, self.pos_y)
+            print "Not enough data for calculate window placement"
+            print self.x, self.y, self.pos_x, self.pos_y
         else:
             self.guess_dimensions()
 
@@ -388,7 +351,6 @@ class WMWindow(object):
             elif not self.screens.screens:
                 screen.main = True
 
-            screen.calculate_columns(self.name)
             self.screens.append(screen)
 
         # sort screens depending on the position (only horizontal order is
@@ -399,6 +361,13 @@ class WMWindow(object):
             screens[screen.x_shift] = screen
 
         self.screens.screens = [screens[key] for key in sorted(screens.keys())]
+
+        if len(self.screens.screens) > 1 and not self._main:
+            self._detect_dock_position()
+
+        for screen in self.screens.screens:
+            screen.calculate_columns()
+
 
     def get_data(self):
         """Return current window coordinates and size"""
@@ -430,7 +399,7 @@ class WMWindow(object):
         return True
 
     def get_coords(self, which):
-        """Return window in screen coordinates"""
+        """Return screen coordinates"""
         scr = self.screens.screens[self.current_screen]
 
         coord_map = {"maximized": scr.maximized,
@@ -466,17 +435,17 @@ def cycle(monitors, right=False, main=None):
 
     coords = wmwin.get_coords(key)
     if order:
-        cmd = ["xdotool", "getactivewindow",
-               "windowsize", str(coords["size_x"]), str(coords["size_y"]),
-               "windowmove", str(coords["pos_x"]), str(coords["pos_y"]),
-               "mousemove", str(coords["pos_x"] + coords["size_x"] / 2),
-               str(coords["pos_y"] + coords["size_y"] / 2)]
+        cmd = ['xdotool', "getactivewindow",
+               "windowsize", str(coords['size_x']), str(coords['size_y']),
+               "windowmove", str(coords['pos_x']), str(coords['pos_y']),
+               "mousemove", str(coords['pos_x'] + coords['size_x'] / 2),
+               str(coords['pos_y'] + coords['size_y'] / 2)]
     else:
-        cmd = ["xdotool", "getactivewindow",
-           "windowmove", str(coords["pos_x"]), str(coords["pos_y"]),
-           "windowsize", str(coords["size_x"]), str(coords["size_y"]),
-           "mousemove", str(coords["pos_x"] + coords["size_x"] / 2),
-           str(coords["pos_y"] + coords["size_y"] / 2)]
+        cmd = ['xdotool', "getactivewindow",
+           "windowmove", str(coords['pos_x']), str(coords['pos_y']),
+           "windowsize", str(coords['size_x']), str(coords['size_y']),
+           "mousemove", str(coords['pos_x'] + coords['size_x'] / 2),
+           str(coords['pos_y'] + coords['size_y'] / 2)]
 
     call(cmd)
 
@@ -491,7 +460,7 @@ def show_monitors(monitors):
 
 
 def move_mouse(monitors, name):
-    """Move the mosue pointer to the left upper corner oft the specified by
+    """Move the mouse pointer to the left upper corner oft the specified by
     the name screen"""
     mon = monitors.get(name)
 
@@ -501,7 +470,7 @@ def move_mouse(monitors, name):
 
     posx = mon["sx"] + 15
     posy = mon["sy"] + 50
-    cmd = ["xdotool", "mousemove", str(posx), str(posy)]
+    cmd = ['xdotool', "mousemove", str(posx), str(posy)]
     call(cmd)
 
 
@@ -510,23 +479,28 @@ def main():
     arguments = """Move windows around mimicking Windows7 flag+arrows behaviour
 
 Usage:
-  %(prog)s move (left|right) [-r|-l] [-m NAME]
-  %(prog)s mousemove -m NAME
-  %(prog)s showmonitors
+  %(prog)s move (left|right) [-r|-l] [-m NAME] [-d]
+  %(prog)s mousemove -m NAME [-d]
+  %(prog)s showmonitors [-d]
   %(prog)s (-h | --help)
   %(prog)s --version
 
 Options:
-  -m NAME --monitor-name=NAME  Name of the monitor to be treades as the main
+  -m NAME --monitor-name=NAME  Name of the monitor to be treated as the main
                                one (so the one containing dock)
   -r --dock-right              Dock is on the right edge of the rightmost
                                screen
   -l --dock-left               Dock is on the left edge of the leftmost screen
   -h --help                    Show this screen.
   -v --version                 Show version.
+  -d --debug                   Show debug messages.
 
 """ % {"prog": sys.argv[0]}
-    opts = docopt(arguments, version=0.1)
+    opts = docopt(arguments, version=1.4)
+    level = logging.DEBUG if opts['--debug'] else logging.WARNING
+    logging.basicConfig(format='%(lineno)s %(funcName)s(): %(message)s',
+                        level=level)
+
     monitors = get_monitors()
 
     if opts["showmonitors"]:
@@ -534,7 +508,7 @@ Options:
         return
 
     if opts["mousemove"]:
-        move_mouse(monitors, opts["--monitor-name"])
+        move_mouse(monitors, opts['--monitor-name'])
         return
 
     if opts["move"]:
