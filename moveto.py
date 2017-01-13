@@ -123,7 +123,9 @@ Date: 2015-10-12 added debug option, figured out wmaker decorations
                  calculation method
 Date: 2015-12-13 Added simple detection of certain windows, which doesn't
                  behave nicely - mostly QT apps
-Version: 1.5
+Date: 2016-01-15 Moved corrections of the position of the QT apps after the
+                 columns gets calculated
+Version: 1.6
 """
 from subprocess import Popen, PIPE, call
 import logging
@@ -136,8 +138,6 @@ from gtk import gdk
 
 
 # TODO: Make it configurable (lots of options starting from ini file)
-COVER_MINIWINDOWS = True
-COVER_DOCK = False
 
 
 def get_magic_number():
@@ -188,21 +188,6 @@ def get_monitors():
     return monitors
 
 
-def set_cover():
-    """read actual wmaker config and set appropriate globals"""
-    global COVER_MINIWINDOWS, COVER_DOCK
-
-    with open(os.path.expanduser("~/GNUstep/Defaults/WindowMaker")) as fobj:
-        for line in fobj:
-            if "NoWindowOverIcons" in line and "YES" in line:
-                COVER_MINIWINDOWS = False
-                continue
-
-            if "NoWindowOverDock" in line and "NO" in line:
-                COVER_DOCK = True
-                continue
-
-
 class Screens(object):
     """
     Holds entire screen information and also Screen objects as a list
@@ -223,7 +208,10 @@ class Screens(object):
         left-half maximized, right-half maximized. If so, return appropriate
         information, None otherwise
         """
+        logging.debug('window: %s', window)
         for scr in self.screens:
+            logging.debug('screen left_half: %s, screen right_half: %s',
+                          scr.left_half, scr.right_half)
             if window == scr.left_half:
                 return 'left'
             if window == scr.right_half:
@@ -238,12 +226,30 @@ class Screens(object):
         return None
 
 
+class Conf(object):
+    """Config namespace"""
+    cover_miniwindows = True
+    cover_dock = False
+
+    def __init__(self):
+        """read actual wmaker config and set appropriate config options"""
+
+        with open(os.path.expanduser("~/GNUstep/Defaults/WindowMaker")) as fobj:
+            for line in fobj:
+                if "NoWindowOverIcons" in line and "YES" in line:
+                    self.cover_miniwindows = False
+                    continue
+
+                if "NoWindowOverDock" in line and "NO" in line:
+                    self.cover_dock = True
+                    continue
+
+
 class Screen(object):
     """
     Holds separate display information. It can be separate X screen or just a
     display/monitor
     """
-    misbehaving_windows = ["Oracle VM VirtualBox", "LibreOffice"]
 
     def __init__(self, x=0, y=0, sx=0, sy=0):
         """Initialization"""
@@ -268,27 +274,28 @@ class Screen(object):
                           "size_x": 0,
                           "size_y": 0}
 
-    def calculate_columns(self, window_name):
+    def calculate_columns(self):
         """
         Calculate dimension grid, which two column windows could occupy,
         make it pixel exact.
         """
         sx, sy = self.x, self.y
         logging.debug('sx, and sy: %d, %d', sx, sy)
+        conf = Conf()
 
         if sx % 2 != 0:
             # it is rare, but hell, shit happens
             sx = sx - 1
 
-        if self.main and not COVER_DOCK:
+        if self.main and not conf.cover_dock:
             # dock on the right side + 2px for border
             self.x = sx = sx - (64 + 2)
         else:
             self.x = sx = sx - 2
 
         # miniwindows on bottom + 2px for border
-        logging.debug('Covering miniwindows: %s', COVER_MINIWINDOWS)
-        if not COVER_MINIWINDOWS:
+        logging.debug('Covering miniwindows: %s', conf.cover_miniwindows)
+        if not conf.cover_miniwindows:
             self.y = sy = sy - (64 + 2)
 
         self.left_half['size_x'] = sx / 2 - 1
@@ -302,14 +309,6 @@ class Screen(object):
         self.maximized['size_y'] = self.right_half['size_y'] = \
                 self.left_half['size_y'] = sy - DECORATIONS_HEIGHT
 
-        for name in self.misbehaving_windows:
-            if name in window_name:
-                logging.debug('Correcting position of window %s off 21 '
-                              'pixels', window_name)
-                self.left_half["pos_y"] = 21
-                self.right_half["pos_y"] = 21
-                self.right_half["pos_y"] = 21
-
         logging.debug('left half: %s', self.left_half)
         logging.debug('right half: %s', self.right_half)
         logging.debug('maximized: %s', self.maximized)
@@ -322,8 +321,9 @@ class WMWindow(object):
 
     position_re = re.compile("^\s+Position:\s(\d+),(\d+)\s.*$")
     geometry_re = re.compile(".*Geometry:\s(\d+)x(\d+).*")
+    misbehaving_windows = ["Oracle VM VirtualBox", "LibreOffice"]
 
-    def __init__(self, monitors, main):
+    def __init__(self, monitors, main_screen):
         """
         Initialization
         """
@@ -334,7 +334,7 @@ class WMWindow(object):
         self.pos_y = None
         self.current_screen = 0
         self.state = None
-        self._main = main
+        self._main = main_screen
         self.name = get_window_name()
 
         self._discover_screens(monitors)
@@ -429,6 +429,9 @@ class WMWindow(object):
                             '%d, %d, %d, %d', self.name, self.x, self.y,
                             self.pos_x, self.pos_y)
         else:
+            logging.warning('Window name "%s", (x, y, pos_x, pos_y): '
+                            '%d, %d, %d, %d', self.name, self.x, self.y,
+                            self.pos_x, self.pos_y)
             self.guess_dimensions()
 
     def guess_dimensions(self):
@@ -464,7 +467,7 @@ class WMWindow(object):
             self._detect_dock_position()
 
         for screen in self.screens.screens:
-            screen.calculate_columns(self.name)
+            screen.calculate_columns()
 
     def get_data(self):
         """Return current window coordinates and size"""
@@ -499,6 +502,15 @@ class WMWindow(object):
         """Return window in screen coordinates"""
         scr = self.screens.screens[self.current_screen]
 
+        for name in self.misbehaving_windows:
+            if name in self.name:
+                logging.debug('Correcting position of window %s off 21 '
+                              'pixels', self.name)
+                scr.left_half["pos_y"] = 21
+                scr.right_half["pos_y"] = 21
+                scr.maximized["pos_y"] = 21
+                break
+
         coord_map = {"maximized": scr.maximized,
                      "left_half": scr.left_half,
                      "right_half": scr.right_half}
@@ -506,12 +518,13 @@ class WMWindow(object):
         return coord_map[which]
 
 
-def cycle(monitors, right=False, main=None):
+def cycle(monitors, right=False, main_screen=None):
     """Cycle through the window states"""
-    wmwin = WMWindow(monitors, main)
+    wmwin = WMWindow(monitors, main_screen)
     current_state = wmwin.guess_dimensions()
 
     direction = "right" if right else "left"
+    logging.debug('direction: %s, current_state %s', direction, current_state)
 
     if direction == "left":
         movement = {"left": ("right_half", "left", False),
@@ -525,6 +538,7 @@ def cycle(monitors, right=False, main=None):
                     None: ("right_half", None, False)}
 
     key, direction, order = movement[current_state]
+    logging.debug('key: %s, direction: %s, order: %s', key, direction, order)
 
     if direction:
         if not wmwin.move_to_screen(direction):
@@ -593,7 +607,7 @@ Options:
   -d --debug                   Show debug messages.
 
 """ % {'prog': sys.argv[0]}
-    opts = docopt(arguments, version=1.5)
+    opts = docopt(arguments, version=1.6)
     level = logging.DEBUG if opts['--debug'] else logging.WARNING
     logging.basicConfig(filename=os.path.expanduser('~/moveto.log'),
                         format='%(funcName)s:%(lineno)d %(message)s',
@@ -609,8 +623,8 @@ Options:
         return
 
     if opts['move']:
-        set_cover()
-        cycle(monitors, bool(opts['right']), main=opts['--monitor-name'])
+        cycle(monitors, bool(opts['right']),
+              main_screen=opts['--monitor-name'])
 
 
 if __name__ == '__main__':
