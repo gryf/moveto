@@ -6,7 +6,6 @@ Script calculates size of the target windows depending on current screen size.
 Required python 2.7
 
 Dependencies:
-    - pygtk
     - docopt
     - wmctrl
     - xdotool
@@ -125,16 +124,16 @@ Date: 2015-12-13 Added simple detection of certain windows, which doesn't
                  behave nicely - mostly QT apps
 Date: 2016-01-15 Moved corrections of the position of the QT apps after the
                  columns gets calculated
-Version: 1.6
+Date: 2017-01-13 Removed pygtk dependency, don't rely on display names
+Version: 1.7
 """
-from subprocess import Popen, PIPE, call
+from subprocess import Popen, PIPE, call, check_output
 import logging
 import os
 import re
 import sys
 
 from docopt import docopt
-from gtk import gdk
 
 
 # TODO: Make it configurable (lots of options starting from ini file)
@@ -164,26 +163,38 @@ def get_window_name():
     """Return the current active window name"""
 
     name = Popen(["xdotool", "getactivewindow", "getwindowname"],
-                      stdout=PIPE).communicate()[0]
+                 stdout=PIPE).communicate()[0]
     name = name.strip()
     logging.debug('window name: %s', name)
     return name
 
 
 def get_monitors():
-    """Get monitors information:
+    """
+    Get monitors information:
         name
-        index
-        dimensions (as a tuple position x, y and dimension x and y)"""
+        dimensions (as a tuple position x, y and dimension x and y)
+    """
+
+    connected = re.compile('^(?P<display_name>.+)\sconnected\s'
+                           '(?P<x>\d+)x'
+                           '(?P<y>\d+)\+'
+                           '(?P<sx>\d+)\+'
+                           '(?P<sy>\d+)\s'
+                           '\(.*\)\s\d+mm\sx\s\d+mm$')
 
     monitors = {}
-    gdk_screen = gdk.screen_get_default()
 
-    for out_num in range(gdk_screen.get_n_monitors()):
-        monitor = {"index": out_num}
-        (monitor["sx"], monitor["sy"],
-         monitor["x"], monitor["y"]) = gdk_screen.get_monitor_geometry(out_num)
-        monitors[gdk_screen.get_monitor_plug_name(out_num)] = monitor
+    randr = Popen(['xrandr'], stdout=PIPE)
+    out = check_output('grep connected'.split(), stdin=randr.stdout)
+
+    for line in out.split('\n'):
+        res = connected.match(line)
+        if not res:
+            continue
+        res = res.groupdict()
+        name = res.pop('display_name')
+        monitors[name] = res
 
     return monitors
 
@@ -225,6 +236,10 @@ class Screens(object):
 
         return None
 
+    def __str__(self):
+        """str"""
+        return "<Screens: %s>" % " ".join([str(s) for s in self.screens])
+
 
 class Conf(object):
     """Config namespace"""
@@ -234,7 +249,8 @@ class Conf(object):
     def __init__(self):
         """read actual wmaker config and set appropriate config options"""
 
-        with open(os.path.expanduser("~/GNUstep/Defaults/WindowMaker")) as fobj:
+        path = os.path.expanduser("~/GNUstep/Defaults/WindowMaker")
+        with open(path) as fobj:
             for line in fobj:
                 if "NoWindowOverIcons" in line and "YES" in line:
                     self.cover_miniwindows = False
@@ -284,7 +300,7 @@ class Screen(object):
         conf = Conf()
 
         if sx % 2 != 0:
-            # it is rare, but hell, shit happens
+            # it should't have a place, but hell, shit happens
             sx = sx - 1
 
         if self.main and not conf.cover_dock:
@@ -307,11 +323,30 @@ class Screen(object):
         self.maximized['size_x'] = sx
 
         self.maximized['size_y'] = self.right_half['size_y'] = \
-                self.left_half['size_y'] = sy - DECORATIONS_HEIGHT
+            self.left_half['size_y'] = sy - DECORATIONS_HEIGHT
 
         logging.debug('left half: %s', self.left_half)
         logging.debug('right half: %s', self.right_half)
         logging.debug('maximized: %s', self.maximized)
+
+    def __str__(self):
+
+        return ("[Screen <%dx%d+%d+%d>, left: <%dx%d+%d+%d>, right: "
+                "<%dx%d+%d+%d>, max: <%dx%d+%d+%d>]" %
+                (self.x, self.y, self.x_shift, self.y_shift,
+                 self.left_half['size_x'],
+                 self.left_half['size_y'],
+                 self.left_half['pos_x'],
+                 self.left_half['pos_y'],
+                 self.right_half['size_x'],
+                 self.right_half['size_y'],
+                 self.right_half['pos_x'],
+                 self.right_half['pos_y'],
+                 self.maximized['size_x'],
+                 self.maximized['size_y'],
+                 self.maximized['pos_x'],
+                 self.maximized['pos_y']))
+
 
 class WMWindow(object):
     """
@@ -321,7 +356,8 @@ class WMWindow(object):
 
     position_re = re.compile("^\s+Position:\s(\d+),(\d+)\s.*$")
     geometry_re = re.compile(".*Geometry:\s(\d+)x(\d+).*")
-    misbehaving_windows = ["Oracle VM VirtualBox", "LibreOffice"]
+    misbehaving_windows = ["Oracle VM VirtualBox", "LibreOffice",
+                           'cool-retro-term']
 
     def __init__(self, monitors, main_screen):
         """
@@ -373,7 +409,6 @@ class WMWindow(object):
         winner = int(winner)
         logging.debug("predicted x position of the dock: %d", winner)
 
-        import ripdb; ripdb.set_trace()
         for screen in self.screens.screens:
             logging.debug("screen: %s", str(screen))
             if winner in range(screen.x_shift, screen.x + screen.x_shift + 1):
@@ -468,6 +503,7 @@ class WMWindow(object):
 
         for screen in self.screens.screens:
             screen.calculate_columns()
+        logging.info('discovered screens: %s', self.screens)
 
     def get_data(self):
         """Return current window coordinates and size"""
@@ -553,10 +589,10 @@ def cycle(monitors, right=False, main_screen=None):
                str(coords['pos_y'] + coords['size_y'] / 2)]
     else:
         cmd = ['xdotool', 'getactivewindow',
-           'windowmove', str(coords['pos_x']), str(coords['pos_y']),
-           'windowsize', str(coords['size_x']), str(coords['size_y']),
-           'mousemove', str(coords['pos_x'] + coords['size_x'] / 2),
-           str(coords['pos_y'] + coords['size_y'] / 2)]
+               'windowmove', str(coords['pos_x']), str(coords['pos_y']),
+               'windowsize', str(coords['size_x']), str(coords['size_y']),
+               'mousemove', str(coords['pos_x'] + coords['size_x'] / 2),
+               str(coords['pos_y'] + coords['size_y'] / 2)]
 
     call(cmd)
 
@@ -567,7 +603,8 @@ def show_monitors(monitors):
     for name, data in monitors.items():
         mon = data.copy()
         mon.update({'name': name})
-        logging.debug('%(name)s at %(sx)sx%(sy)s with dimensions %(x)sx%(y)s', mon)
+        logging.debug('%(name)s at %(sx)sx%(sy)s with dimensions '
+                      '%(x)sx%(y)s', mon)
 
 
 def move_mouse(monitors, name):
@@ -575,9 +612,9 @@ def move_mouse(monitors, name):
     the name screen"""
     mon = monitors.get(name)
 
-    if not mon:
-        logging.warning('No such monitor: %s', name)
-        return
+    # if not mon:
+    #     logging.warning('No such monitor: %s', name)
+    #     return
 
     posx = mon['sx'] + 15
     posy = mon['sy'] + 50
@@ -607,7 +644,7 @@ Options:
   -d --debug                   Show debug messages.
 
 """ % {'prog': sys.argv[0]}
-    opts = docopt(arguments, version=1.6)
+    opts = docopt(arguments, version=1.7)
     level = logging.DEBUG if opts['--debug'] else logging.WARNING
     logging.basicConfig(filename=os.path.expanduser('~/moveto.log'),
                         format='%(funcName)s:%(lineno)d %(message)s',
