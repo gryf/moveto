@@ -3,7 +3,7 @@
 Position/place windows in WindowMaker.
 Script calculates size of the target windows depending on current screen size.
 
-Required python 2.7
+Required python 3.9
 
 Dependencies:
     - docopt
@@ -125,16 +125,16 @@ Date: 2015-12-13 Added simple detection of certain windows, which doesn't
 Date: 2016-01-15 Moved corrections of the position of the QT apps after the
                  columns gets calculated
 Date: 2017-01-13 Removed pygtk dependency, don't rely on display names
-Version: 1.7
+Date: 2021-09-10 removed docopt, added support for py3
 """
-from subprocess import Popen, PIPE, call, check_output
+import argparse
 import logging
 import os
 import re
-import sys
+import subprocess
 
-from docopt import docopt
 
+__version__ = 1.8
 
 # TODO: Make it configurable (lots of options starting from ini file)
 
@@ -142,12 +142,12 @@ from docopt import docopt
 def get_magic_number():
     """Get the numbers for window shift and position"""
 
-    out = Popen(['xdotool', 'getactivewindow'],
-                stdout=PIPE).communicate()[0]
-    out = out.strip()
-    out = Popen(['xwininfo', '-id', out],
-                stdout=PIPE).communicate()[0]
-    out.strip()
+    res = subprocess.run(['xdotool', 'getactivewindow'], encoding='utf-8',
+                         capture_output=True)
+    out = res.stdout.strip()
+    res = subprocess.run(['xwininfo', '-id', out], encoding='utf-8',
+                         capture_output=True)
+    out = res.stdout.strip()
     for line in out.split("\n"):
         line = line.strip()
         if line.startswith("Relative upper-left Y"):
@@ -156,15 +156,16 @@ def get_magic_number():
 
     return magic * 2 + 1, magic + 8
 
+
 MAGIC_NO, DECORATIONS_HEIGHT = get_magic_number()
 
 
 def get_window_name():
     """Return the current active window name"""
 
-    name = Popen(["xdotool", "getactivewindow", "getwindowname"],
-                 stdout=PIPE).communicate()[0]
-    name = name.strip()
+    res = subprocess.run(["xdotool", "getactivewindow", "getwindowname"],
+                         encoding='utf-8', capture_output=True)
+    name = res.stdout.strip()
     logging.debug('window name: %s', name)
     return name
 
@@ -176,7 +177,7 @@ def get_monitors():
         dimensions (as a tuple position x, y and dimension x and y)
     """
 
-    connected = re.compile('^(?P<display_name>.+)\sconnected\s'
+    connected = re.compile('^(?P<display_name>[a-zA-Z0-9-]+)\s[a-zA-Z\s]+\s'
                            '(?P<x>\d+)x'
                            '(?P<y>\d+)\+'
                            '(?P<sx>\d+)\+'
@@ -185,10 +186,12 @@ def get_monitors():
 
     monitors = {}
 
-    randr = Popen(['xrandr'], stdout=PIPE)
-    out = check_output('grep connected'.split(), stdin=randr.stdout)
+    res = subprocess.run(['xrandr'], encoding='utf-8', capture_output=True)
 
-    for line in out.split('\n'):
+    for line in res.stdout.split('\n'):
+        if 'disconnected' in line or 'connected' not in line:
+            continue
+
         res = connected.match(line)
         if not res:
             continue
@@ -383,10 +386,11 @@ class WMWindow(object):
         arranged vertically. Note, that clip may or may not influence the
         process, since it might be placed freely, and contains more dockapps
         or appicons than dock itself."""
-        res = Popen("xwininfo -tree -root -children".split(),
-                    stdout=PIPE).communicate()[0]
+
+        res = subprocess.run("xwininfo -tree -root -children".split(),
+                             encoding='utf-8', capture_output=True)
         result = {}
-        for item in res.split("\n"):
+        for item in res.stdout.split("\n"):
             if "64x64" not in item:
                 continue
 
@@ -423,9 +427,10 @@ class WMWindow(object):
         """
         self.x = self.y = self.pos_x = self.pos_y = None
 
-        out = Popen(["xdotool", "getactivewindow", "getwindowgeometry"],
-                    stdout=PIPE).communicate()[0]
-        out = out.strip().split("\n")
+        res = subprocess.run(["xdotool", "getactivewindow",
+                              "getwindowgeometry"],
+                             encoding='utf-8', capture_output=True)
+        out = res.stdout.strip().split("\n")
 
         if len(out) != 3:
             logging.warning('Cannot get window size and position for %s',
@@ -554,12 +559,12 @@ class WMWindow(object):
         return coord_map[which]
 
 
-def cycle(monitors, right=False, main_screen=None):
+def cycle(monitors, args):
     """Cycle through the window states"""
-    wmwin = WMWindow(monitors, main_screen)
+    wmwin = WMWindow(monitors, args.monitor_name)
     current_state = wmwin.guess_dimensions()
 
-    direction = "right" if right else "left"
+    direction = "right" if args.right else "left"
     logging.debug('direction: %s, current_state %s', direction, current_state)
 
     if direction == "left":
@@ -594,74 +599,85 @@ def cycle(monitors, right=False, main_screen=None):
                'mousemove', str(coords['pos_x'] + coords['size_x'] / 2),
                str(coords['pos_y'] + coords['size_y'] / 2)]
 
-    call(cmd)
+    subprocess.run(cmd)
 
 
-def show_monitors(monitors):
+def show_monitors(monitors, args):
     """Print out available monitors"""
-    print "Available monitors:"
+    print("Available monitors:")
     for name, data in monitors.items():
         mon = data.copy()
         mon.update({'name': name})
-        logging.debug('%(name)s at %(sx)sx%(sy)s with dimensions '
-                      '%(x)sx%(y)s', mon)
+        print('%(name)s at %(sx)sx%(sy)s with dimensions %(x)sx%(y)s' % mon)
 
 
-def move_mouse(monitors, name):
+def move_mouse(monitors, args):
     """Move the mosue pointer to the left upper corner oft the specified by
     the name screen"""
-    mon = monitors.get(name)
+    mon = monitors.get(args.monitor_name)
 
     # if not mon:
     #     logging.warning('No such monitor: %s', name)
     #     return
 
-    posx = mon['sx'] + 15
-    posy = mon['sy'] + 50
+    posx = int(mon['sx']) + 15
+    posy = int(mon['sy']) + 50
     cmd = ['xdotool', 'mousemove', str(posx), str(posy)]
-    call(cmd)
+    subprocess.run(cmd)
 
 
 def main():
     """get the arguments, run the app"""
-    arguments = """Move windows around mimicking Windows7 flag+arrows behaviour
+    parser = argparse.ArgumentParser(description="Move windows around "
+                                     "mimicking Windows7 flag+arrows "
+                                     "behaviour")
+    parser.add_argument('-v', '--version', help='Show version',
+                        action='store_true')
 
-Usage:
-  %(prog)s move (left|right) [-r|-l] [-m NAME] [-d]
-  %(prog)s mousemove -m NAME [-d]
-  %(prog)s showmonitors [-d]
-  %(prog)s (-h | --help)
-  %(prog)s --version
+    subparsers = parser.add_subparsers(help='supported commands')
 
-Options:
-  -m NAME --monitor-name=NAME  Name of the monitor to be treated as the main
-                               one (so the one containing dock)
-  -r --dock-right              Dock is on the right edge of the rightmost
-                               screen
-  -l --dock-left               Dock is on the left edge of the leftmost screen
-  -h --help                    Show this screen.
-  -v --version                 Show version.
-  -d --debug                   Show debug messages.
+    move = subparsers.add_parser('move', help='Move window')
+    group = move.add_mutually_exclusive_group()
+    group.add_argument('--left', action='store_true')
+    group.add_argument('--right', action='store_true')
+    group = move.add_mutually_exclusive_group()
+    group.add_argument('-r', '--dock-right', action='store_true',
+                       help='Dock is on the right edge of the rightmost '
+                       'screen')
+    group.add_argument('-l', '--dock-left', action='store_true',
+                       help='Dock is on the left edge of the leftmost screen')
+    move.add_argument('-m', '--monitor-name', help='Name of the monitor to be '
+                      'treated as the main one (so the one containing dock)')
+    move.add_argument('-d', '--debug', action='store_true',
+                      help='Show debug messages')
+    move.set_defaults(func=cycle)
 
-""" % {'prog': sys.argv[0]}
-    opts = docopt(arguments, version=1.7)
-    level = logging.DEBUG if opts['--debug'] else logging.WARNING
+    mousemove = subparsers.add_parser('mousemove', help='Move mouse pointer')
+    mousemove.add_argument('-m', '--monitor-name', help='Name of the monitor '
+                           'to move mouse pointer to', required=True)
+    mousemove.add_argument('-d', '--debug', action='store_true',
+                           help='Show debug messages')
+    mousemove.set_defaults(func=move_mouse)
+
+    showmonitors = subparsers.add_parser('showmonitors')
+    showmonitors.add_argument('-d', '--debug', action='store_true',
+                              help='Show debug messages')
+    showmonitors.set_defaults(func=show_monitors)
+
+    args = parser.parse_args()
+
+    if args.version:
+        print(__version__)
+        return
+
+    level = logging.DEBUG if args.debug else logging.WARNING
     logging.basicConfig(filename=os.path.expanduser('~/moveto.log'),
                         format='%(funcName)s:%(lineno)d %(message)s',
                         level=level)
+
     monitors = get_monitors()
 
-    if opts['showmonitors']:
-        show_monitors(monitors)
-        return
-
-    if opts['mousemove']:
-        move_mouse(monitors, opts['--monitor-name'])
-        return
-
-    if opts['move']:
-        cycle(monitors, bool(opts['right']),
-              main_screen=opts['--monitor-name'])
+    args.func(monitors, args)
 
 
 if __name__ == '__main__':
